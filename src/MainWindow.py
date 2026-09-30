@@ -39,6 +39,12 @@ elif "gnome" in getenv("SESSION").lower() or "gnome" in getenv("XDG_CURRENT_DESK
     import gnome.ScaleManager as ScaleManager
 
     currentDesktop = "gnome"
+elif "kde" in getenv("SESSION").lower() or "plasma" in getenv("XDG_CURRENT_DESKTOP").lower():
+    import kde.WallpaperManager as WallpaperManager
+    import kde.ThemeManager as ThemeManager
+    import kde.ScaleManager as ScaleManager
+
+    currentDesktop = "kde"
 else:
     ErrorDialog("Error", "Your desktop environment is not supported yet.")
     exit(0)

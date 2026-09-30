@@ -45,6 +45,8 @@ data_files = [
    "src/xfce/KeyboardManager.py", "src/xfce/WhiskerManager.py", "src/xfce/PanelManager.py"]),
  ("/usr/share/pardus/pardus-welcome/src/gnome",
   ["src/gnome/WallpaperManager.py", "src/gnome/ThemeManager.py", "src/gnome/ScaleManager.py"]),
+ ("/usr/share/pardus/pardus-welcome/src/kde",
+  ["src/kde/WallpaperManager.py", "src/kde/ThemeManager.py", "src/kde/ScaleManager.py"]),
  ("/usr/share/pardus/pardus-welcome/ui", ["ui/MainWindow.glade"]),
  ("/usr/bin/", ["pardus-welcome"]),
  ("/etc/skel/.config/autostart", ["tr.org.pardus.welcome.desktop"]),
