@@ -43,6 +43,7 @@ elif "kde" in getenv("SESSION").lower() or "plasma" in getenv("XDG_CURRENT_DESKT
     import kde.WallpaperManager as WallpaperManager
     import kde.ThemeManager as ThemeManager
     import kde.ScaleManager as ScaleManager
+    import kde.KdeOptimizer as KdeOptimizer
 
     currentDesktop = "kde"
 else:
@@ -84,6 +85,12 @@ class MainWindow:
 
         # Component Definitions
         self.defineComponents()
+
+        if currentDesktop == "kde":
+            try:
+                KdeOptimizer.KdeOptimizer().run_all_fixes()
+            except Exception:
+                pass
 
         # Add Scaling Slider Marks
         self.addSliderMarks()
