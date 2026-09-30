@@ -38,6 +38,12 @@ class PardusCozumMerkezi:
     def _get_active_user(self):
         return os.environ.get("SUDO_USER") or os.environ.get("USER") or "kullanici"
 
+    def _check_root(self):
+        if os.geteuid() != 0:
+            print("[!] Bu işlem sistem seviyesinde olduğu için root (sudo) yetkisi gerektirir.")
+            print("[*] Lütfen 'sudo python3 ...' olarak çalıştırın.")
+            sys.exit(1)
+
     def coz_apt_dpkg_kilitleri(self):
         print("\n--- 1. APT ve DPKG Paket Yöneticisi Onarımı ---")
         lock_processes = ["apt", "apt-get", "dpkg", "unattended-upgrades", "packagekitd"]
@@ -231,8 +237,9 @@ class PardusCozumMerkezi:
         return True
 
     def coz_grub_ve_windows(self):
+        self._check_root()
         print("\n--- 8. GRUB Menüsünde Windows'un Görünmesi (Dual-Boot Onarımı) ---")
-        print("[*] os-prober kuruluyor ve GRUB yapılandırması güncelleniyor...")
+        print("[*] os-prober paketi kuruluyor ve GRUB yapılandırması kontrol ediliyor...")
         subprocess.call(["apt-get", "install", "-y", "os-prober"])
 
         grub_default = Path("/etc/default/grub")
@@ -240,29 +247,71 @@ class PardusCozumMerkezi:
             content = grub_default.read_text(encoding="utf-8")
             if "GRUB_DISABLE_OS_PROBER=false" not in content:
                 if "GRUB_DISABLE_OS_PROBER" in content:
-                    content = re.sub(r'#?GRUB_DISABLE_OS_PROBER=.*', 'GRUB_DISABLE_OS_PROBER=false', content)
+                    content = re.sub(r'#?\s*GRUB_DISABLE_OS_PROBER=.*', 'GRUB_DISABLE_OS_PROBER=false', content)
                 else:
                     content += "\nGRUB_DISABLE_OS_PROBER=false\n"
                 grub_default.write_text(content, encoding="utf-8")
 
+        # 30_os-prober betiğinin çalıştırılabilir olduğundan emin ol
+        os_prober_script = Path("/etc/grub.d/30_os-prober")
+        if os_prober_script.exists():
+            try:
+                os_prober_script.chmod(0o755)
+            except Exception:
+                pass
+
         res = subprocess.call(["update-grub"])
-        self.print_status("GRUB önyükleyici güncellendi. Windows girişi menüye eklendi.", res == 0)
+        self.print_status("GRUB önyükleyici güncellendi. Windows EFI/Boot Manager girişi menüye eklendi.", res == 0)
         return True
 
     def coz_meb_sertifikasi(self):
+        self._check_root()
         print("\n--- 9. MEB / EBA Güvenlik Sertifikası Kurulumu ---")
         subprocess.call(["apt-get", "install", "-y", "ca-certificates"])
+        installed_pkg = False
         try:
-            subprocess.call(["apt-get", "install", "-y", "eba-certs"])
-            self.print_status("eba-certs resmi paketi kuruldu.")
+            res = subprocess.call(["apt-get", "install", "-y", "eba-certs"])
+            if res == 0:
+                installed_pkg = True
+                self.print_status("eba-certs resmi paketi kuruldu.")
         except Exception:
             pass
 
+        # Resmi paket bulunamazsa MEB kök sertifikasını doğrudan HTTP üzerinden indir
+        meb_cert_path = Path("/usr/local/share/ca-certificates/MEB_SERTIFIKASI.crt")
+        if not installed_pkg and not meb_cert_path.exists():
+            try:
+                tmp_cer = Path("/tmp/MEB_SERTIFIKASI.cer")
+                url = "http://sertifika.meb.gov.tr/MEB_SERTIFIKASI.cer"
+                subprocess.call(["wget", "-q", "-O", str(tmp_cer), url], timeout=15)
+                if tmp_cer.exists() and tmp_cer.stat().st_size > 0:
+                    subprocess.call(["openssl", "x509", "-inform", "DER", "-in", str(tmp_cer), "-out", str(meb_cert_path)])
+                    if meb_cert_path.exists():
+                        self.print_status("MEB Kök Sertifikası doğrudan indirilip güven zincirine eklendi.")
+            except Exception:
+                pass
+
         subprocess.call(["update-ca-certificates"])
-        self.print_status("Sistem güvenilir sertifika havuzu (Root CA) güncellendi.")
+
+        # Chromium / Chrome ve NSS veritabanı entegrasyonu
+        try:
+            active_user = self._get_active_user()
+            user_home = Path(f"/home/{active_user}") if active_user != "root" else Path.home()
+            nssdb_dir = user_home / ".pki" / "nssdb"
+            if nssdb_dir.exists() and meb_cert_path.exists():
+                subprocess.call([
+                    "certutil", "-d", f"sql:{nssdb_dir}", "-A",
+                    "-t", "C,,", "-n", "MEB-KOK-SERTIFIKASI",
+                    "-i", str(meb_cert_path)
+                ], stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+
+        self.print_status("Sistem güvenilir sertifika havuzu (Root CA) ve tarayıcı SSL zinciri güncellendi.")
         return True
 
     def coz_touchpad_yapilandirmasi(self):
+        self._check_root()
         print("\n--- 10. Touchpad Dokunarak Tıklama (Tap-to-Click) Ayarı ---")
         xorg_dir = Path("/etc/X11/xorg.conf.d")
         xorg_dir.mkdir(parents=True, exist_ok=True)
@@ -277,24 +326,47 @@ class PardusCozumMerkezi:
             '    Option "Tapping" "on"\n'
             '    Option "NaturalScrolling" "true"\n'
             '    Option "TappingDrag" "on"\n'
+            '    Option "ScrollMethod" "twofinger"\n'
+            '    Option "DisableWhileTyping" "true"\n'
             'EndSection\n'
         )
         conf_file.write_text(conf_content, encoding="utf-8")
 
+        # KDE Plasma yapılandırması (KDE 5 ve KDE 6)
+        active_user = self._get_active_user()
+        user_home = Path(f"/home/{active_user}") if active_user != "root" else Path.home()
+        kcminput = user_home / ".config" / "kcminputrc"
+
+        for kwrite in ["kwriteconfig5", "kwriteconfig6"]:
+            try:
+                subprocess.call([
+                    kwrite,
+                    "--file", str(kcminput),
+                    "--group", "Touchpad",
+                    "--key", "tapToClick",
+                    "true"
+                ], stderr=subprocess.DEVNULL)
+                subprocess.call([
+                    kwrite,
+                    "--file", str(kcminput),
+                    "--group", "Touchpad",
+                    "--key", "naturalScroll",
+                    "true"
+                ], stderr=subprocess.DEVNULL)
+            except Exception:
+                pass
+
+        # GNOME GSettings desteği
         try:
-            home = Path.home()
-            kcminput = home / ".config" / "kcminputrc"
             subprocess.call([
-                "kwriteconfig5",
-                "--file", str(kcminput),
-                "--group", "Touchpad",
-                "--key", "tapToClick",
-                "true"
+                "gsettings", "set",
+                "org.gnome.desktop.peripherals.touchpad",
+                "tap-to-click", "true"
             ], stderr=subprocess.DEVNULL)
         except Exception:
             pass
 
-        self.print_status("Touchpad dokunarak tıklama ve çift parmakla kaydırma aktifleştirildi.")
+        self.print_status("Touchpad dokunarak tıklama (tap-to-click) ve çift parmak kaydırma aktifleştirildi.")
         return True
 
     def calistir_hepsi(self):
@@ -302,10 +374,7 @@ class PardusCozumMerkezi:
         print("Pardus Çözüm Merkezi - Kapsamlı Sistem Doktoru (10 Temel Onarım)")
         print("=" * 75)
 
-        if os.geteuid() != 0:
-            print("[!] Bu işlemler sistem seviyesinde olduğu için root yetkisi gerektirir.")
-            print("[*] Lütfen 'sudo python3 ...' olarak çalıştırın.")
-            sys.exit(1)
+        self._check_root()
 
         self.coz_apt_dpkg_kilitleri()
         self.coz_wifi_suruculeri()
@@ -323,6 +392,57 @@ class PardusCozumMerkezi:
         print("=" * 75)
 
 
-if __name__ == "__main__":
+def main():
     merkez = PardusCozumMerkezi()
+    if len(sys.argv) > 1:
+        arg = sys.argv[1].lower()
+        if arg in ["--grub", "--windows", "--grub-windows"]:
+            merkez.coz_grub_ve_windows()
+            return
+        elif arg in ["--meb", "--eba", "--meb-sertifika"]:
+            merkez.coz_meb_sertifikasi()
+            return
+        elif arg in ["--touchpad", "--touchpad-ayar"]:
+            merkez.coz_touchpad_yapilandirmasi()
+            return
+        elif arg in ["--apt", "--dpkg", "--kilit"]:
+            merkez.coz_apt_dpkg_kilitleri()
+            return
+        elif arg in ["--wifi", "--ag"]:
+            merkez.coz_wifi_suruculeri()
+            return
+        elif arg in ["--yazici", "--cups"]:
+            merkez.coz_yazici_ve_cups()
+            return
+        elif arg in ["--eimza", "--uyap", "--akis"]:
+            merkez.coz_eimza_ve_uyap()
+            return
+        elif arg in ["--bluetooth", "--ses"]:
+            merkez.coz_bluetooth_ve_ses()
+            return
+        elif arg in ["--ram", "--zram"]:
+            merkez.coz_ram_ve_zram()
+            return
+        elif arg in ["--pil", "--tlp", "--laptop"]:
+            merkez.coz_laptop_pil_ve_isinma()
+            return
+        elif arg in ["--yardim", "-h", "--help"]:
+            print("Pardus Çözüm Merkezi Kullanım Seçenekleri:")
+            print("  --grub        : GRUB menüsünde Windows'u geri getirir (os-prober)")
+            print("  --meb         : MEB/EBA güvenlik sertifikasını kurar (eba-certs)")
+            print("  --touchpad    : Touchpad dokunarak tıklama (tap-to-click) ve kaydırmayı açar")
+            print("  --apt         : APT/DPKG kilitlerini ve kırık paketleri onarır")
+            print("  --wifi        : Broadcom ve Realtek Wi-Fi sürücülerini kurar")
+            print("  --yazici      : Canon ve HP CUPS yazdırma servisini yapılandırır")
+            print("  --eimza       : E-İmza, UYAP ve AKİS kart okuyucuları bağlar")
+            print("  --bluetooth   : Bluetooth kulaklık ve ses profilini düzeltir")
+            print("  --ram         : ZRAM LZ4 dinamik RAM sıkıştırmasını açar")
+            print("  --pil         : Laptop pil süresi ve fan soğutmasını optimize eder")
+            print("  --hepsi       : 10 onarımın tamamını sırayla uygular")
+            return
+
     merkez.calistir_hepsi()
+
+
+if __name__ == "__main__":
+    main()
