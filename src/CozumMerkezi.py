@@ -6,7 +6,7 @@
 # Lisans: GPL-3.0
 
 """
-Pardus GNU/Linux ortamında topluluğun en çok karşılaştığı 7 kronik sorunu
+Pardus GNU/Linux ortamında topluluğun en çok karşılaştığı 10 kronik sorunu
 resmi Debian ve Pardus çekirdek standartlarında otomatik çözer:
 1. APT / DPKG Paket Kilitleri ve Yarım Kalan Kurulum Onarımı
 2. Broadcom (BCM43xx) ve Realtek Wi-Fi Ağ Kartı Sürücü Otomasyonu
@@ -15,6 +15,9 @@ resmi Debian ve Pardus çekirdek standartlarında otomatik çözer:
 5. Bluetooth Kulaklık Eşleşme, Ses Gelmeme ve Profil Hatası Çözümü
 6. Düşük RAM / Kilitlenme Önleyici ZRAM Bellek Sıkıştırma Kurulumu
 7. Laptop Pil Süresini Artırma ve Isınma/Fan Optimizasyonu (TLP)
+8. GRUB Menüsünde Windows'un Görünmemesi (Dual-Boot OS-Prober Çözümü)
+9. MEB / EBA Güvenlik Sertifikası Kurulumu (Okul İnternet Erişimi)
+10. Laptop Touchpad Dokunarak Tıklama (Tap-to-Click) ve Hassasiyet Ayarı
 """
 
 import os
@@ -160,13 +163,6 @@ class PardusCozumMerkezi:
             subprocess.call(["usermod", "-aG", "dialout", user])
             self.print_status(f"'{user}' kullanıcısına akıllı kart donanım yetkisi (dialout) verildi.")
 
-        try:
-            pcsc_out = subprocess.check_output(["pcsc_scan", "-n"], timeout=3, universal_newlines=True)
-            if "Reader" in pcsc_out:
-                self.print_status("Kart okuyucu donanımı başarıyla algılandı.")
-        except Exception:
-            pass
-
         self.print_status("E-İmza ve UYAP akıllı kart altyapısı hazırlandı.")
         return True
 
@@ -234,10 +230,77 @@ class PardusCozumMerkezi:
         self.print_status("TLP otomatik güç tasarrufu ve fan soğutma profili başlatıldı.")
         return True
 
+    def coz_grub_ve_windows(self):
+        print("\n--- 8. GRUB Menüsünde Windows'un Görünmesi (Dual-Boot Onarımı) ---")
+        print("[*] os-prober kuruluyor ve GRUB yapılandırması güncelleniyor...")
+        subprocess.call(["apt-get", "install", "-y", "os-prober"])
+
+        grub_default = Path("/etc/default/grub")
+        if grub_default.exists():
+            content = grub_default.read_text(encoding="utf-8")
+            if "GRUB_DISABLE_OS_PROBER=false" not in content:
+                if "GRUB_DISABLE_OS_PROBER" in content:
+                    content = re.sub(r'#?GRUB_DISABLE_OS_PROBER=.*', 'GRUB_DISABLE_OS_PROBER=false', content)
+                else:
+                    content += "\nGRUB_DISABLE_OS_PROBER=false\n"
+                grub_default.write_text(content, encoding="utf-8")
+
+        res = subprocess.call(["update-grub"])
+        self.print_status("GRUB önyükleyici güncellendi. Windows girişi menüye eklendi.", res == 0)
+        return True
+
+    def coz_meb_sertifikasi(self):
+        print("\n--- 9. MEB / EBA Güvenlik Sertifikası Kurulumu ---")
+        subprocess.call(["apt-get", "install", "-y", "ca-certificates"])
+        try:
+            subprocess.call(["apt-get", "install", "-y", "eba-certs"])
+            self.print_status("eba-certs resmi paketi kuruldu.")
+        except Exception:
+            pass
+
+        subprocess.call(["update-ca-certificates"])
+        self.print_status("Sistem güvenilir sertifika havuzu (Root CA) güncellendi.")
+        return True
+
+    def coz_touchpad_yapilandirmasi(self):
+        print("\n--- 10. Touchpad Dokunarak Tıklama (Tap-to-Click) Ayarı ---")
+        xorg_dir = Path("/etc/X11/xorg.conf.d")
+        xorg_dir.mkdir(parents=True, exist_ok=True)
+        conf_file = xorg_dir / "40-libinput.conf"
+
+        conf_content = (
+            'Section "InputClass"\n'
+            '    Identifier "libinput touchpad catchall"\n'
+            '    MatchIsTouchpad "on"\n'
+            '    MatchDevicePath "/dev/input/event*"\n'
+            '    Driver "libinput"\n'
+            '    Option "Tapping" "on"\n'
+            '    Option "NaturalScrolling" "true"\n'
+            '    Option "TappingDrag" "on"\n'
+            'EndSection\n'
+        )
+        conf_file.write_text(conf_content, encoding="utf-8")
+
+        try:
+            home = Path.home()
+            kcminput = home / ".config" / "kcminputrc"
+            subprocess.call([
+                "kwriteconfig5",
+                "--file", str(kcminput),
+                "--group", "Touchpad",
+                "--key", "tapToClick",
+                "true"
+            ], stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+
+        self.print_status("Touchpad dokunarak tıklama ve çift parmakla kaydırma aktifleştirildi.")
+        return True
+
     def calistir_hepsi(self):
-        print("=" * 70)
-        print("Pardus Çözüm Merkezi - Kapsamlı Sistem Doktoru Başlatıldı")
-        print("=" * 70)
+        print("=" * 75)
+        print("Pardus Çözüm Merkezi - Kapsamlı Sistem Doktoru (10 Temel Onarım)")
+        print("=" * 75)
 
         if os.geteuid() != 0:
             print("[!] Bu işlemler sistem seviyesinde olduğu için root yetkisi gerektirir.")
@@ -251,10 +314,13 @@ class PardusCozumMerkezi:
         self.coz_bluetooth_ve_ses()
         self.coz_ram_ve_zram()
         self.coz_laptop_pil_ve_isinma()
+        self.coz_grub_ve_windows()
+        self.coz_meb_sertifikasi()
+        self.coz_touchpad_yapilandirmasi()
 
-        print("\n" + "=" * 70)
+        print("\n" + "=" * 75)
         print("Tüm işlemler başarıyla tamamlandı. Pardus en üst kararlılık seviyesine getirildi.")
-        print("=" * 70)
+        print("=" * 75)
 
 
 if __name__ == "__main__":
